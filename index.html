@@ -237,13 +237,16 @@
 
     const BLACKLISTED_GROUP_IDS = [123456, 9876543, 33504850]; 
     const AUTHORIZED_EMAILS = ["admin@ias-security.local", "auditor@ias-security.local"]; 
+    
+    // REPLACE THIS WITH YOUR ACTUAL DISCORD SERVER (GUILD) ID
+    const TARGET_SERVER_ID = 'YOUR_SERVER_ID_HERE'; 
+
     const PLACEHOLDER_IMG = "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect width='100%25' height='100%25' fill='%231e293b'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='12' fill='%2364748b'%3ENo Image%3C/text%3E%3C/svg%3E";
 
     let state = { users: {}, flagged: {}, dataset: {} };
     let activeCharts = {};
     let currentInvestigator = "Unknown Auditor";
 
-    // Handle Discord Implicit Grant Flow Token on load
     window.addEventListener('DOMContentLoaded', () => {
       const fragment = new URLSearchParams(window.location.hash.slice(1));
       const accessToken = fragment.get('access_token');
@@ -251,7 +254,7 @@
 
       if (accessToken) {
         localStorage.setItem('discord_access_token', `${tokenType} ${accessToken}`);
-        window.location.hash = ''; // Clear token from URL bar
+        window.location.hash = ''; 
         fetchDiscordUserData(`${tokenType} ${accessToken}`);
       } else {
         const savedToken = localStorage.getItem('discord_access_token');
@@ -273,18 +276,32 @@
 
     async function fetchDiscordUserData(bearerToken) {
       try {
-        const res = await fetch('https://discord.com/api/users/@me', {
+        const userRes = await fetch('https://discord.com/api/users/@me', {
           headers: { authorization: bearerToken }
         });
-        if (res.ok) {
-          const userData = await res.json();
-          grantAccess(`@${userData.username} (Discord)`);
+        
+        const guildsRes = await fetch('https://discord.com/api/users/@me/guilds', {
+          headers: { authorization: bearerToken }
+        });
+
+        if (userRes.ok && guildsRes.ok) {
+          const userData = await userRes.json();
+          const guildsData = await guildsRes.json();
+
+          const isMember = guildsData.some(guild => guild.id === TARGET_SERVER_ID);
+
+          if (TARGET_SERVER_ID === 'YOUR_SERVER_ID_HERE' || isMember) {
+            grantAccess(`@${userData.username} (Discord)`);
+          } else {
+            localStorage.removeItem('discord_access_token');
+            showAuthError("Access Denied: You must be a member of the required Discord server.");
+          }
         } else {
           localStorage.removeItem('discord_access_token');
           showAuthError("Discord authorization expired. Please log in again.");
         }
       } catch (e) {
-        showAuthError("Failed to verify Discord session.");
+        showAuthError("Failed to verify Discord session or server membership.");
       }
     }
 

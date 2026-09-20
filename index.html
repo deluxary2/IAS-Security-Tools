@@ -236,6 +236,1149 @@
     const db = firebase.database();
 
     const BLACKLISTED_GROUP_IDS = [123456, 9876543, 33504850]; 
+    const AUTHORIZED_EMAILS = ["admin@ias-security.local", "auditor@ias-security.local", "riamaestro67@gmail.com"];[span_1](start_span)[span_1](end_span)
+    
+    // REPLACE THIS WITH YOUR ACTUAL DISCORD SERVER (GUILD) ID
+    const TARGET_SERVER_ID = 'YOUR_SERVER_ID_HERE'; 
+
+    const PLACEHOLDER_IMG = "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect width='100%25' height='100%25' fill='%231e293b'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='12' fill='%2364748b'%3ENo Image%3C/text%3E%3C/svg%3E";
+
+    let state = { users: {}, flagged: {}, dataset: {} };
+    let activeCharts = {};
+    let currentInvestigator = "Unknown Auditor";
+
+    window.addEventListener('DOMContentLoaded', () => {
+      const fragment = new URLSearchParams(window.location.hash.slice(1));
+      const accessToken = fragment.get('access_token');
+      const tokenType = fragment.get('token_type');
+
+      if (accessToken) {
+        localStorage.setItem('discord_access_token', `${tokenType} ${accessToken}`);
+        window.location.hash = ''; 
+        fetchDiscordUserData(`${tokenType} ${accessToken}`);
+      } else {
+        const savedToken = localStorage.getItem('discord_access_token');
+        const savedEmailAuth = localStorage.getItem('ias_authorized_email');
+        if (savedToken) {
+          fetchDiscordUserData(savedToken);
+        } else if (savedEmailAuth) {
+          grantAccess(savedEmailAuth);
+        }
+      }
+    });
+
+    function loginWithDiscord() {
+      const CLIENT_ID = '1551155960842559608'; 
+      const REDIRECT_URI = window.location.origin + window.location.pathname;
+      const discordAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=token&scope=identify%20guilds`;
+      window.location.href = discordAuthUrl;
+    }
+
+    async function fetchDiscordUserData(bearerToken) {
+      try {
+        const userRes = await fetch('https://discord.com/api/users/@me', {
+          headers: { authorization: bearerToken }
+        });
+        
+        const guildsRes = await fetch('https://discord.com/api/users/@me/guilds', {
+          headers: { authorization: bearerToken }
+        });
+
+        if (userRes.ok && guildsRes.ok) {
+          const userData = await userRes.json();
+          const guildsData = await guildsRes.json();
+
+          const isMember = guildsData.some(guild => guild.id === TARGET_SERVER_ID);
+
+          if (TARGET_SERVER_ID === 'YOUR_SERVER_ID_HERE' || isMember) {
+            grantAccess(`@${userData.username} (Discord)`);
+          } else {
+            localStorage.removeItem('discord_access_token');
+            showAuthError("Access Denied: You must be a member of the required Discord server.");
+          }
+        } else {
+          localStorage.removeItem('discord_access_token');
+          showAuthError("Discord authorization expired. Please log in again.");
+        }
+      } catch (e) {
+        showAuthError("Failed to verify Discord session or server membership.");
+      }
+    }
+
+    function verifyEmailAccess() {
+      const email = document.getElementById('authEmailInput').value.trim().toLowerCase();
+      if (AUTHORIZED_EMAILS.includes(email)) {
+        localStorage.setItem('ias_authorized_email', email);
+        grantAccess(`Email: ${email}`);
+      } else {
+        showAuthError("This email address is not authorized for IAS access.");
+      }
+    }
+
+    function showAuthError(msg) {
+      const errEl = document.getElementById('authErrorMsg');
+      errEl.innerText = msg;
+      errEl.classList.remove('hidden');
+    }
+
+    function grantAccess(identityName) {
+      currentInvestigator = identityName;
+      document.getElementById('currentUserDisplay').innerText = currentInvestigator;
+      document.getElementById('authGate').classList.add('hidden');
+      initializeDashboardListeners();
+    }
+
+    function initializeDashboardListeners() {
+      db.ref('roblox_security/flagged').on('value', (snapshot) => {
+        state.flagged = snapshot.val() || {};
+        updateBadges();
+        if (!document.getElementById('page-flagged').classList.contains('hidden')) renderFlaggedUsers();
+      });
+
+      db.ref('roblox_security/dataset').on('value', (snapshot) => {
+        state.dataset = snapshot.val() || {};
+        updateBadges();
+        if (!document.getElementById('page-dataset').classList.contains('hidden')) renderDataset();
+      });
+    }
+
+    function saveState() {
+      db.ref('roblox_security/flagged').set(state.flagged);
+      db.ref('roblox_security/dataset').set(state.dataset);
+    }
+
+    function updateBadges() {
+      document.getElementById('flagged-badge').innerText = Object.keys(state.flagged).length;
+      document.getElementById('dataset-badge').innerText = Object.keys(state.dataset).length;
+    }
+
+    function showToast(message, type = 'success') {
+      const container = document.getElementById('toastContainer');
+      const toast = document.createElement('div');
+      const isFlag = type === 'flag';
+      
+      toast.className = `toast-msg px-4 py-2.5 rounded-lg text-xs font-semibold shadow-lg text-white flex items-center gap-2 pointer-events-auto ${
+        isFlag ? 'bg-red-600' : 'bg-emerald-600'
+      }`;
+      toast.innerHTML = `<i class="fa-solid ${isFlag ? 'fa-flag' : 'fa-check-circle'}"></i> <span>${escapeHTML(message)}</span>`;
+      
+      container.appendChild(toast);
+      setTimeout(() => toast.remove(), 2500);
+    }
+
+    function safeImageError(imgElement) {
+      imgElement.onerror = null;
+      imgElement.src = PLACEHOLDER_IMG;
+    }
+
+    function escapeHTML(str) {
+      return String(str || '').replace(/[&<>"']/g, function(m) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
+      });
+    }
+
+    const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    function switchTab(tabName) {
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.add('hidden'));
+
+      document.getElementById(`tab-${tabName}`).classList.add('active');
+      document.getElementById(`page-${tabName}`).classList.remove('hidden');
+
+      if (tabName === 'flagged') renderFlaggedUsers();
+      if (tabName === 'dataset') renderDataset();
+    }
+
+    async function resolveSingleUsername(username) {
+      const targetUrl = `https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=10`;
+      const endpoints = [
+        `https://users.roproxy.com/v1/users/search?keyword=${encodeURIComponent(username)}`,
+        `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`
+      ];
+
+      for (let url of endpoints) {
+        try {
+          const response = await fetch(url, { cache: "no-store" });
+          if (response.ok) {
+            const raw = await response.json();
+            const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            const list = data.data || (data.contents ? JSON.parse(data.contents).data : null);
+            if (list && list.length > 0) {
+              const exact = list.find(u => u.name.toLowerCase() === username.toLowerCase());
+              return exact || list[0];
+            }
+          }
+        } catch (e) {}
+        await delay(200);
+      }
+      return null;
+    }
+
+    async function loadAllUsers() {
+      const searchBtn = document.getElementById('searchBtn');
+      const rawInput = document.getElementById('usernameInput').value.trim();
+      const container = document.getElementById('multiUserContainer');
+      container.innerHTML = '';
+
+      if (!rawInput) {
+        container.innerHTML = '<div class="bg-red-950/50 border border-red-800 text-red-400 p-4 rounded-lg font-medium text-sm">Please enter at least one Username.</div>';
+        return;
+      }
+
+      searchBtn.disabled = true;
+      searchBtn.innerHTML = '<span class="spinner"></span> Processing...';
+      const usernames = rawInput.split(',').map(s => s.trim()).filter(s => s.length > 0);
+
+      for (let i = 0; i < usernames.length; i++) {
+        const username = usernames[i];
+        
+        const userBlock = document.createElement('div');
+        userBlock.className = 'bg-slate-800 rounded-xl border border-slate-700 p-6 shadow-sm';
+        userBlock.innerHTML = `<div class="flex items-center space-x-3 text-slate-300 text-sm"><span class="spinner"></span> <span>Resolving profile data for <strong>${escapeHTML(username)}</strong>...</span></div>`;
+        container.appendChild(userBlock);
+
+        const userInfo = await resolveSingleUsername(username);
+
+        if (!userInfo) {
+          userBlock.innerHTML = `<div class="bg-red-950/50 border border-red-800 text-red-400 p-4 rounded-lg text-sm font-semibold">User "${escapeHTML(username)}" not found.</div>`;
+        } else {
+          await createUserProfileBlock(userInfo.id, userInfo.name, userBlock);
+        }
+
+        if (i < usernames.length - 1) await delay(300);
+      }
+
+      searchBtn.disabled = false;
+      searchBtn.innerHTML = '<i class="fa-solid fa-users-viewfinder"></i> <span>Check User(s)</span>';
+    }
+
+    async function createUserProfileBlock(userId, username, targetElement) {
+      try {
+        let userData = { name: username, created: new Date().toISOString() };
+        try {
+          const userRes = await fetch(`https://users.roproxy.com/v1/users/${userId}`);
+          if (userRes.ok) userData = await userRes.json();
+        } catch(e) {}
+
+        let avatarUrl = PLACEHOLDER_IMG;
+        const thumbUrls = [
+          `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=150x150&format=Png&isCircular=true`,
+          `https://thumbnails.roproxy.com/v1/users/avatar-headshot?userIds=${userId}&size=150x150&format=Png&isCircular=true`
+        ];
+
+        for (let url of thumbUrls) {
+          try {
+            const thumbRes = await fetch(url);
+            if (thumbRes.ok) {
+              const thumbData = await thumbRes.json();
+              if (thumbData.data && thumbData.data[0]?.imageUrl) {
+                avatarUrl = thumbData.data[0].imageUrl;
+                break;
+              }
+            }
+          } catch(e) {}
+        }
+
+        const createdDate = new Date(userData.created);
+        const ageInDays = Math.floor((new Date() - createdDate) / (1000 * 60 * 60 * 24));
+
+        let flagMessage = "None";
+        let hasBlacklistedGroup = false;
+        try {
+          const groupsRes = await fetch(`https://groups.roproxy.com/v1/users/${userId}/groups/roles`);
+          const groupsData = await groupsRes.json();
+          if (groupsData.data) {
+            const foundFlags = groupsData.data.filter(g => BLACKLISTED_GROUP_IDS.includes(g.group.id));
+            if (foundFlags.length > 0) {
+              flagMessage = foundFlags.map(g => g.group.name).join(", ");
+              hasBlacklistedGroup = true;
+            }
+          }
+        } catch (e) {
+          flagMessage = "Could not verify groups.";
+        }
+
+        let isInventoryPrivate = false;
+        let inventoryStatusHtml = `<a href="https://www.roblox.com/users/${userId}/inventory" target="_blank" class="text-blue-400 hover:underline font-medium">View Public Inventory</a>`;
+        
+        try {
+          const invCheck = await fetch(`https://inventory.roproxy.com/v1/users/${userId}/can-view-inventory`);
+          if (invCheck.ok) {
+            const invData = await invCheck.json();
+            if (invData.canView === false) {
+              inventoryStatusHtml = "<span class='text-red-400 font-semibold'>User's inventory is private.</span>";
+              isInventoryPrivate = true;
+            }
+          }
+        } catch (e) {}
+
+        const isPreviouslyFlagged = state.flagged[userId] !== undefined;
+
+        state.users[userId] = {
+          id: userId,
+          username: userData.name,
+          avatarUrl: avatarUrl,
+          createdDate: userData.created,
+          ageInDays: ageInDays,
+          inventoryPrivate: isInventoryPrivate,
+          blacklistedGroup: hasBlacklistedGroup,
+          statuses: isPreviouslyFlagged ? (state.flagged[userId].statuses || {
+            inventory: false,
+            groups: false,
+            outfits: false,
+            badges: false
+          }) : {
+            inventory: !isInventoryPrivate,
+            groups: true,
+            outfits: true,
+            badges: true
+          }
+        };
+
+        checkAndApplyAutoFlag(userId);
+
+        let dbBannerHtml = '';
+        const inDataset = state.dataset[userId] !== undefined;
+        const inFlag = state.flagged[userId] !== undefined;
+
+        if (inDataset) {
+          dbBannerHtml = `
+            <div class="mb-4 p-3 rounded-lg bg-indigo-950/80 border border-indigo-500/80 text-indigo-200 text-xs shadow-md flex items-center gap-2">
+              <i class="fa-solid fa-database text-indigo-400"></i>
+              <span class="font-bold">This user is currently in the dataset database (Logged by: ${escapeHTML(state.dataset[userId].investigator || 'Unknown')}).</span>
+            </div>
+          `;
+        } else if (inFlag) {
+          dbBannerHtml = `
+            <div class="mb-4 p-3 rounded-lg bg-red-950/80 border border-red-500/80 text-red-200 text-xs shadow-md flex items-center gap-2">
+              <i class="fa-solid fa-triangle-exclamation text-red-400"></i>
+              <span class="font-bold">Flagged by: ${escapeHTML(state.flagged[userId].investigator || 'System')}</span>
+            </div>
+          `;
+        }
+
+        targetElement.id = `userCard_${userId}`;
+        targetElement.innerHTML = dbBannerHtml + renderProfileHTML(userId, userData.name, ageInDays, createdDate.toLocaleDateString(), inventoryStatusHtml, flagMessage, avatarUrl);
+
+      } catch (err) {
+        targetElement.innerHTML = `<div class="bg-red-950/50 border border-red-800 text-red-400 p-4 rounded-lg text-sm font-semibold">Error fetching profile data for ${escapeHTML(username)}.</div>`;
+      }
+    }
+
+    function renderProfileHTML(userId, name, ageInDays, formattedDate, inventoryStatusHtml, flagMessage, avatarUrl) {
+      const u = state.users[userId];
+      return `
+        <div class="flex flex-col lg:flex-row gap-6 justify-between items-start mb-6 border-b border-slate-700 pb-6">
+          <div class="flex items-center space-x-4">
+            <img src="${avatarUrl}" alt="Avatar" onerror="safeImageError(this)" class="w-20 h-20 rounded-full border-2 border-slate-600 bg-slate-900 object-cover flex-shrink-0" />
+            <div class="space-y-1">
+              <div class="flex items-center space-x-2">
+                <h3 class="text-lg font-bold text-slate-100">${escapeHTML(name)}</h3>
+                <a href="https://www.roblox.com/users/${userId}/profile" target="_blank" class="text-blue-400 text-xs hover:underline"><i class="fa-solid fa-external-link"></i></a>
+              </div>
+              <p class="text-xs text-slate-300"><strong>Account Age:</strong> ${ageInDays} days (${formattedDate})</p>
+              
+              <div class="text-xs text-slate-300 flex items-center gap-2 flex-wrap">
+                <span><strong>Inventory:</strong> ${inventoryStatusHtml}</span>
+                <div class="inline-flex items-center space-x-1 ml-1">
+                  <button onclick="toggleSectionFlag('${userId}', 'inventory', false)" class="text-[10px] px-2 py-0.5 rounded border bg-emerald-950/60 text-emerald-400 border-emerald-800 font-semibold">Clean</button>
+                  <button onclick="toggleSectionFlag('${userId}', 'inventory', true)" class="text-[10px] px-2 py-0.5 rounded border bg-red-950/60 text-red-400 border-red-800 font-semibold">Flag</button>
+                </div>
+              </div>
+
+              <p class="text-xs ${u.blacklistedGroup ? 'text-red-400 font-bold' : 'text-slate-300'}"><strong>Blacklisted Groups:</strong> ${escapeHTML(flagMessage)}</p>
+            </div>
+          </div>
+
+          <div class="flex flex-col sm:flex-row items-start sm:items-center gap-4 w-full lg:w-auto justify-between">
+            <div class="bg-slate-900 border border-slate-700 rounded-lg p-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-300">
+              <div class="flex items-center gap-1.5"><span>Inventory:</span> <span id="ind_inv_${userId}">${u.statuses.inventory ? '🟢' : '🔴'}</span></div>
+              <div class="flex items-center gap-1.5"><span>Groups:</span> <span id="ind_grp_${userId}">${u.statuses.groups ? '🟢' : '🔴'}</span></div>
+              <div class="flex items-center gap-1.5"><span>Outfits:</span> <span id="ind_out_${userId}">${u.statuses.outfits ? '🟢' : '🔴'}</span></div>
+              <div class="flex items-center gap-1.5"><span>Badges:</span> <span id="ind_bdg_${userId}">${u.statuses.badges ? '🟢' : '🔴'}</span></div>
+            </div>
+
+            <button onclick="openDatasetModal('${userId}', '${escapeHTML(name)}')" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs px-4 py-2.5 rounded-lg transition flex items-center gap-2">
+              <i class="fa-solid fa-plus-circle"></i> Add to Dataset
+            </button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div class="border border-slate-700 rounded-lg p-4 bg-slate-800 flex flex-col">
+            <div class="flex justify-between items-center mb-3">
+              <span class="text-xs font-bold bg-slate-900 text-slate-300 px-2.5 py-1 rounded-full border border-slate-700" id="groupsCount_${userId}">Total: 0</span>
+              <div class="flex items-center space-x-1">
+                <button onclick="toggleSectionFlag('${userId}', 'groups', false)" class="text-xs px-2 py-1 rounded border bg-emerald-950/60 text-emerald-400 border-emerald-800 font-semibold">Clean</button>
+                <button onclick="toggleSectionFlag('${userId}', 'groups', true)" class="text-xs px-2 py-1 rounded border bg-red-950/60 text-red-400 border-red-800 font-semibold">Flag</button>
+                <button onclick="loadGroups('${userId}')" class="text-xs bg-slate-700 hover:bg-slate-600 text-white font-semibold px-2.5 py-1 rounded">Load</button>
+              </div>
+            </div>
+            <div class="output-box border-t border-slate-700 pt-3">
+              <div id="groupsOutput_${userId}" class="grid grid-cols-2 sm:grid-cols-3 gap-2"></div>
+            </div>
+          </div>
+
+          <div class="border border-slate-700 rounded-lg p-4 bg-slate-800 flex flex-col">
+            <div class="flex justify-between items-center mb-3">
+              <span class="text-xs font-bold bg-slate-900 text-slate-300 px-2.5 py-1 rounded-full border border-slate-700" id="outfitsCount_${userId}">Total: 0</span>
+              <div class="flex items-center space-x-1">
+                <button onclick="toggleSectionFlag('${userId}', 'outfits', false)" class="text-xs px-2 py-1 rounded border bg-emerald-950/60 text-emerald-400 border-emerald-800 font-semibold">Clean</button>
+                <button onclick="toggleSectionFlag('${userId}', 'outfits', true)" class="text-xs px-2 py-1 rounded border bg-red-950/60 text-red-400 border-red-800 font-semibold">Flag</button>
+                <button onclick="loadOutfits('${userId}')" class="text-xs bg-slate-700 hover:bg-slate-600 text-white font-semibold px-2.5 py-1 rounded">Load</button>
+              </div>
+            </div>
+            <div class="output-box border-t border-slate-700 pt-3 relative">
+              <div id="outfitsOutput_${userId}" class="grid grid-cols-2 sm:grid-cols-3 gap-2"></div>
+            </div>
+          </div>
+
+          <div class="md:col-span-2 border border-slate-700 rounded-lg p-4 bg-slate-800 flex flex-col">
+            <div class="flex justify-between items-center mb-3">
+              <span class="text-xs font-bold bg-slate-900 text-slate-300 px-2.5 py-1 rounded-full border border-slate-700" id="badgesCount_${userId}">Total Badges: 0</span>
+              <div class="flex items-center space-x-1">
+                <button onclick="toggleSectionFlag('${userId}', 'badges', false)" class="text-xs px-2 py-1 rounded border bg-emerald-950/60 text-emerald-400 border-emerald-800 font-semibold">Clean</button>
+                <button onclick="toggleSectionFlag('${userId}', 'badges', true)" class="text-xs px-2 py-1 rounded border bg-red-950/60 text-red-400 border-red-800 font-semibold">Flag</button>
+                <button onclick="loadBadgesTimeline('${userId}', '${escapeHTML(name)}')" class="text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-3 py-1 rounded flex items-center gap-1">
+                  <i class="fa-solid fa-chart-line"></i> Load All-Time Badges
+                </button>
+              </div>
+            </div>
+            
+            <div id="badgesContainer_${userId}" class="bg-slate-950 rounded-lg p-4 relative min-h-[350px] flex items-center justify-center border border-slate-800">
+              <div id="badgePlaceholder_${userId}" class="text-xs text-slate-400 text-center">
+                Click <strong>Load All-Time Badges</strong> to fetch historical data and render graph.
+              </div>
+              <canvas id="badgeChart_${userId}" class="w-full hidden"></canvas>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function openOutfitModal(imgUrl, name) {
+      document.getElementById('outfitModalImg').src = imgUrl;
+      document.getElementById('outfitModalTitle').innerText = name || 'Outfit Preview';
+      document.getElementById('outfitModal').classList.remove('hidden');
+    }
+
+    function closeOutfitModal() {
+      document.getElementById('outfitModal').classList.add('hidden');
+    }
+
+    function toggleSectionFlag(userId, section, isFlagged) {
+      if (!state.users[userId]) return;
+      state.users[userId].statuses[section] = !isFlagged;
+      
+      const indicatorMap = { inventory: 'inv', groups: 'grp', outfits: 'out', badges: 'bdg' };
+      const el = document.getElementById(`ind_${indicatorMap[section]}_${userId}`);
+      if (el) el.innerText = !isFlagged ? '🟢' : '🔴';
+
+      showToast(isFlagged ? "User flagged" : "User marked clean", isFlagged ? "flag" : "clean");
+      checkAndApplyAutoFlag(userId);
+    }
+
+    function checkAndApplyAutoFlag(userId) {
+      const u = state.users[userId];
+      if (!u) return;
+
+      const isAnySectionFlagged = !u.statuses.inventory || !u.statuses.groups || !u.statuses.outfits || !u.statuses.badges;
+      const isFlagged = u.blacklistedGroup || u.inventoryPrivate || isAnySectionFlagged || state.flagged[userId] !== undefined;
+
+      if (isFlagged) {
+        state.flagged[userId] = {
+          ...u,
+          investigator: currentInvestigator,
+          flaggedAt: state.flagged[userId]?.flaggedAt || new Date().toISOString(),
+          reason: state.flagged[userId]?.reason || (u.blacklistedGroup ? 'Blacklisted Group Member' : (u.inventoryPrivate ? 'Private Inventory' : 'Manual Flagging'))
+        };
+      } else {
+        delete state.flagged[userId];
+      }
+      saveState();
+    }
+
+    async function fetchThumbnailsInChunks(ids, endpoint, paramName, size = "150x150") {
+      const map = {};
+      const chunkSize = 25;
+      for (let i = 0; i < ids.length; i += chunkSize) {
+        const chunk = ids.slice(i, i + chunkSize).join(',');
+        const targetUrl = `https://thumbnails.roblox.com/v1/${endpoint}?${paramName}=${chunk}&size=${size}&format=Png`;
+        const proxyUrls = [
+          targetUrl,
+          `https://thumbnails.roproxy.com/v1/${endpoint}?${paramName}=${chunk}&size=${size}&format=Png`,
+          `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`
+        ];
+
+        for (let url of proxyUrls) {
+          try {
+            const res = await fetch(url);
+            if (res.ok) {
+              const rawData = await res.json();
+              const data = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+              if (data.data) {
+                data.data.forEach(item => {
+                  if (item.imageUrl) map[item.targetId] = item.imageUrl;
+                });
+                break;
+              }
+            }
+          } catch(e) {}
+        }
+      }
+      return map;
+    }
+
+    async function loadGroups(userId) {
+      const container = document.getElementById(`groupsOutput_${userId}`);
+      const counter = document.getElementById(`groupsCount_${userId}`);
+      container.innerHTML = '<div class="text-xs text-slate-400 col-span-full">Loading groups...</div>';
+
+      try {
+        const targetUrl = `https://groups.roblox.com/v1/users/${userId}/groups/roles`;
+        const endpoints = [
+          `https://groups.roproxy.com/v1/users/${userId}/groups/roles`,
+          `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`
+        ];
+
+        let data = null;
+        for (let url of endpoints) {
+          try {
+            const res = await fetch(url);
+            if (res.ok) {
+              const raw = await res.json();
+              data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+              break;
+            }
+          } catch (e) {}
+        }
+
+        if (!data || !data.data || data.data.length === 0) {
+          container.innerHTML = '<div class="text-xs text-slate-400 col-span-full">No public groups found.</div>';
+          counter.innerText = 'Total: 0';
+          return;
+        }
+
+        counter.innerText = `Total: ${data.data.length}`;
+        container.innerHTML = '';
+
+        const groupIds = data.data.map(g => g.group.id);
+        const iconsMap = await fetchThumbnailsInChunks(groupIds, 'groups/icons', 'groupIds', '150x150');
+
+        data.data.forEach(item => {
+          const iconUrl = iconsMap[item.group.id] || PLACEHOLDER_IMG;
+          container.innerHTML += `
+            <div class="border border-slate-700 rounded p-2 text-center bg-slate-900 flex flex-col items-center">
+              <img src="${iconUrl}" alt="Group" onerror="safeImageError(this)" class="w-12 h-12 object-cover rounded mb-1 bg-slate-800" />
+              <div class="text-[11px] font-semibold text-slate-200 leading-tight line-clamp-1 w-full" title="${escapeHTML(item.group.name)}">${escapeHTML(item.group.name)}</div>
+              <div class="text-[10px] text-slate-400 line-clamp-1 w-full">${escapeHTML(item.role.name)}</div>
+            </div>
+          `;
+        });
+      } catch (err) {
+        container.innerHTML = '<div class="text-xs text-red-400 col-span-full">Failed to fetch groups.</div>';
+      }
+    }
+
+    async function loadOutfits(userId) {
+      const container = document.getElementById(`outfitsOutput_${userId}`);
+      const counter = document.getElementById(`outfitsCount_${userId}`);
+      container.innerHTML = '<div class="text-xs text-slate-400 col-span-full">Loading outfits...</div>';
+
+      try {
+        let outfits = [];
+        const baseTargets = [
+          `https://avatar.roblox.com/v1/users/${userId}/outfits?userOutfitType=Creation&page=1&itemsPerPage=50`,
+          `https://avatar.roblox.com/v1/users/${userId}/outfits?userOutfitType=Purchased&page=1&itemsPerPage=50`,
+          `https://avatar.roblox.com/v1/users/${userId}/outfits?itemsPerPage=50`
+        ];
+
+        for (let targetUrl of baseTargets) {
+          const endpoints = [
+            targetUrl.replace('avatar.roblox.com', 'avatar.roproxy.com'),
+            `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`
+          ];
+
+          for (let url of endpoints) {
+            try {
+              const res = await fetch(url);
+              if (res.ok) {
+                const raw = await res.json();
+                const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                if (parsed.data && parsed.data.length > 0) {
+                  outfits = outfits.concat(parsed.data);
+                  break;
+                }
+              }
+            } catch(e) {}
+          }
+        }
+
+        const uniqueOutfits = Array.from(new Map(outfits.map(o => [o.id, o])).values());
+
+        if (uniqueOutfits.length === 0) {
+          container.innerHTML = '<div class="text-xs text-slate-400 col-span-full">No public outfits found.</div>';
+          counter.innerText = 'Total: 0';
+          return;
+        }
+
+        counter.innerText = `Total: ${uniqueOutfits.length}`;
+        container.innerHTML = '';
+
+        const outfitIds = uniqueOutfits.map(o => o.id);
+        const thumbMap = await fetchThumbnailsInChunks(outfitIds, 'users/outfits', 'userOutfitIds', '420x420');
+
+        uniqueOutfits.forEach(outfit => {
+          const outfitThumb = thumbMap[outfit.id] || PLACEHOLDER_IMG;
+          const safeName = escapeHTML(outfit.name);
+
+          const card = document.createElement('div');
+          card.className = 'border border-slate-700 rounded p-2 text-center bg-slate-900 flex flex-col items-center hover:border-indigo-500 transition cursor-pointer';
+          card.onclick = () => openOutfitModal(outfitThumb, safeName);
+          card.innerHTML = `
+            <img src="${outfitThumb}" alt="Outfit" onerror="safeImageError(this)" class="w-16 h-16 object-cover rounded mb-1 bg-slate-800 hover:scale-105 transition" />
+            <div class="text-[11px] font-semibold text-slate-200 leading-tight line-clamp-1 w-full" title="${safeName}">${safeName}</div>
+          `;
+          container.appendChild(card);
+        });
+      } catch (err) {
+        container.innerHTML = '<div class="text-xs text-red-400 col-span-full">Failed to fetch outfits.</div>';
+      }
+    }
+
+    async function fetchUserBadgesData(userId) {
+      try {
+        let allBadges = [];
+        let cursor = "";
+        let hasNextPage = true;
+        let pageCount = 0;
+        const maxPages = 50;
+
+        while (hasNextPage && pageCount < maxPages) {
+          const targetUrl = `https://badges.roblox.com/v1/users/${userId}/badges?limit=100&sortOrder=Asc${cursor ? `&cursor=${cursor}` : ""}`;
+          const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
+          
+          const res = await fetch(proxyUrl);
+          if (!res.ok) break;
+
+          const raw = await res.json();
+          const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+
+          if (data.data && Array.isArray(data.data)) {
+            allBadges = allBadges.concat(data.data);
+          }
+
+          cursor = data.nextPageCursor;
+          hasNextPage = Boolean(cursor);
+          pageCount++;
+        }
+
+        return { data: allBadges, canView: true };
+      } catch (e) {
+        console.error("Badge proxy fetch failed", e);
+      }
+      return { data: [], canView: false };
+    }
+
+    async function loadBadgesTimeline(userId, username) {
+      const placeholder = document.getElementById(`badgePlaceholder_${userId}`);
+      const canvas = document.getElementById(`badgeChart_${userId}`);
+      const counter = document.getElementById(`badgesCount_${userId}`);
+
+      placeholder.classList.remove('hidden');
+      canvas.classList.add('hidden');
+      
+      placeholder.innerHTML = `
+        <div class="text-xs text-slate-300 flex flex-col items-center gap-2">
+          <div class="flex items-center gap-2">
+            <span class="spinner"></span> 
+            <span>Fetching badge data via proxy...</span>
+          </div>
+          <span class="text-[10px] text-slate-400">Loading account history...</span>
+        </div>`;
+
+      try {
+        const response = await fetchUserBadgesData(userId);
+
+        if (!response || response.canView === false) {
+          placeholder.innerHTML = '<span class="text-xs text-red-400">Unable to access inventory badges or inventory is private.</span>';
+          counter.innerText = 'Total Badges: 0';
+          return;
+        }
+
+        if (!response.data || response.data.length === 0) {
+          placeholder.innerHTML = '<span class="text-xs text-slate-400">No badge history found for this account.</span>';
+          counter.innerText = 'Total Badges: 0';
+          return;
+        }
+
+        const allBadges = response.data.map(item => ({
+          awardDateTime: item.awardDateTime || item.awardedDate || item.created,
+          id: item.id
+        }));
+
+        counter.innerText = `Total Badges: ${allBadges.length.toLocaleString()}`;
+
+        const sortedBadges = allBadges
+          .filter(b => b.awardDateTime)
+          .sort((a, b) => new Date(a.awardDateTime) - new Date(b.awardDateTime));
+
+        const chartPoints = sortedBadges.map((b, index) => ({
+          x: new Date(b.awardDateTime),
+          y: index + 1
+        }));
+
+        placeholder.classList.add('hidden');
+        canvas.classList.remove('hidden');
+
+        if (activeCharts[userId]) {
+          activeCharts[userId].destroy();
+        }
+
+        const ctx = canvas.getContext('2d');
+        activeCharts[userId] = new Chart(ctx, {
+          type: 'line',
+          data: {
+            datasets: [{
+              label: 'Total Badges',
+              data: chartPoints,
+              borderColor: 'rgba(234, 179, 8, 0.9)',
+              backgroundColor: 'rgba(234, 179, 8, 0.2)',
+              pointRadius: chartPoints.length > 500 ? 0 : 1.5,
+              showLine: true,
+              borderWidth: 2,
+              tension: 0.1
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              title: {
+                display: true,
+                text: `Badge Tracking | ${username} (${allBadges.length.toLocaleString()} Badges)`,
+                color: '#ffffff',
+                font: { size: 14, weight: 'bold' }
+              }
+            },
+            scales: {
+              x: {
+                type: 'time',
+                time: { unit: 'year', displayFormats: { year: 'yyyy' } },
+                grid: { color: 'rgba(255, 255, 255, 0.08)' },
+                ticks: { color: '#94a3b8' }
+              },
+              y: {
+                grid: { color: 'rgba(255, 255, 255, 0.08)' },
+                ticks: { color: '#94a3b8' }
+              }
+            }
+          }
+        });
+
+      } catch (err) {
+        placeholder.innerHTML = '<span class="text-xs text-red-400">Error rendering badge graph.</span>';
+      }
+    }
+
+    function openDatasetModal(userId, username) {
+      document.getElementById('modalUserId').value = userId;
+      document.getElementById('modalUsername').value = username;
+      document.getElementById('modalReason').value = '';
+      document.getElementById('modalProof').value = '';
+      document.getElementById('datasetModal').classList.remove('hidden');
+    }
+
+    function closeDatasetModal() {
+      document.getElementById('datasetModal').classList.add('hidden');
+    }
+
+    function confirmSaveDataset() {
+      const userId = document.getElementById('modalUserId').value;
+      const username = document.getElementById('modalUsername').value;
+      const reason = document.getElementById('modalReason').value.trim();
+      const proof = document.getElementById('modalProof').value.trim();
+
+      if (!reason) {
+        alert('Please provide a reason for adding this user to the dataset.');
+        return;
+      }
+
+      const u = state.users[userId] || {
+        id: userId,
+        username: username,
+        avatarUrl: PLACEHOLDER_IMG,
+        statuses: { inventory: true, groups: true, outfits: true, badges: true }
+      };
+
+      const entryData = {
+        userId: userId,
+        username: username,
+        avatarUrl: u.avatarUrl,
+        reason: reason,
+        proof: proof,
+        investigator: currentInvestigator,
+        loggedAt: new Date().toISOString(),
+        statuses: { ...u.statuses }
+      };
+
+      db.ref(`roblox_security/dataset/${userId}`).set(entryData)
+        .then(() => {
+          state.dataset[userId] = entryData;
+          updateBadges();
+          closeDatasetModal();
+          showToast(`User ${username} added to Dataset Registry`, "clean");
+        })
+        .catch(err => alert("Firebase write failed: " + err.message));
+    }
+
+    function renderFlaggedUsers() {
+      const grid = document.getElementById('flaggedGrid');
+      const query = (document.getElementById('flaggedSearch').value || '').toLowerCase();
+      grid.innerHTML = '';
+
+      const items = Object.values(state.flagged)
+        .filter(u => u.username && u.username.toLowerCase().includes(query))
+        .sort((a, b) => new Date(b.flaggedAt || 0) - new Date(a.flaggedAt || 0));
+
+      if (items.length === 0) {
+        grid.innerHTML = '<div class="col-span-full bg-slate-800 p-8 text-center text-slate-400 rounded-xl border border-slate-700">No flagged users recorded.</div>';
+        return;
+      }
+
+      items.forEach(u => {
+        let reasonDisplay = u.reason || 'Manual Flagging';
+        if (u.blacklistedGroup) reasonDisplay = 'Blacklisted Group Member';
+        else if (u.inventoryPrivate) reasonDisplay = 'Private Inventory';
+
+        grid.innerHTML += `
+          <div class="bg-slate-800 rounded-xl border border-red-900/50 p-5 shadow-sm space-y-4">
+            <div class="flex items-center space-x-3">
+              <img src="${u.avatarUrl || PLACEHOLDER_IMG}" alt="Avatar" onerror="safeImageError(this)" class="w-14 h-14 rounded-full border-2 border-red-500 object-cover bg-slate-900" />
+              <div>
+                <div class="font-bold text-slate-100 flex items-center gap-1.5">
+                  <span>${escapeHTML(u.username)}</span>
+                  <a href="https://www.roblox.com/users/${u.id || u.userId}/profile" target="_blank" class="text-blue-400 text-xs"><i class="fa-solid fa-external-link"></i></a>
+                </div>
+                <div class="text-xs text-red-400 font-semibold">Reason: ${escapeHTML(reasonDisplay)}</div>
+                <div class="text-[11px] text-slate-400">Flagged by: <strong>${escapeHTML(u.investigator || 'System')}</strong> on ${u.flaggedAt ? new Date(u.flaggedAt).toLocaleString() : 'N/A'}</div>
+              </div>
+            </div>
+
+            <div class="bg-slate-900 p-3 rounded-lg flex justify-between text-xs border border-slate-700 text-slate-300">
+              <div>Inventory: ${u.statuses?.inventory ? '🟢' : '🔴'}</div>
+              <div>Groups: ${u.statuses?.groups ? '🟢' : '🔴'}</div>
+              <div>Outfits: ${u.statuses?.outfits ? '🟢' : '🔴'}</div>
+              <div>Badges: ${u.statuses?.badges ? '🟢' : '🔴'}</div>
+            </div>
+          </div>
+        `;
+      });
+    }
+
+    function renderDataset() {
+      const grid = document.getElementById('datasetGrid');
+      const query = (document.getElementById('datasetSearch').value || '').toLowerCase();
+      grid.innerHTML = '';
+
+      const items = Object.values(state.dataset)
+        .filter(u => u.username && u.username.toLowerCase().includes(query))
+        .sort((a, b) => new Date(b.loggedAt || 0) - new Date(a.loggedAt || 0));
+
+      if (items.length === 0) {
+        grid.innerHTML = '<div class="col-span-full bg-slate-800 p-8 text-center text-slate-400 rounded-xl border border-slate-700">No dataset records found.</div>';
+        return;
+      }
+
+      items.forEach(item => {
+        const card = document.createElement('div');
+        card.className = 'bg-slate-800 rounded-xl border border-indigo-900/50 p-5 shadow-sm space-y-4';
+        card.innerHTML = `
+          <div class="flex items-center justify-between border-b border-slate-700 pb-3">
+            <div class="flex items-center space-x-3">
+              <img src="${item.avatarUrl || PLACEHOLDER_IMG}" alt="Avatar" onerror="safeImageError(this)" class="w-12 h-12 rounded-full border border-indigo-500 object-cover bg-slate-900" />
+              <div>
+                <div class="font-bold text-slate-100">${escapeHTML(item.username)}</div>
+                <div class="text-[11px] text-slate-400">Logged by: <strong>${escapeHTML(item.investigator || 'Unknown')}</strong></div>
+              </div>
+            </div>
+            <a href="https://www.roblox.com/users/${item.userId}/profile" target="_blank" class="text-xs bg-indigo-950/60 text-indigo-400 border border-indigo-800/60 font-semibold px-2.5 py-1 rounded hover:bg-indigo-900/60">
+              Roblox Profile
+            </a>
+          </div>
+
+          <div class="space-y-2 text-xs">
+            <div class="bg-slate-900 p-2.5 rounded border border-slate-700">
+              <span class="font-bold text-slate-300 block mb-0.5">Reason:</span>
+              <p class="text-slate-400 leading-relaxed">${escapeHTML(item.reason)}</p>
+            </div>
+
+            ${item.proof ? `
+            <div class="bg-indigo-950/40 p-2.5 rounded border border-indigo-900/50">
+              <span class="font-bold text-indigo-300 block mb-0.5">Proof / Evidence:</span>
+              <p class="text-indigo-200 leading-relaxed whitespace-pre-wrap">${escapeHTML(item.proof)}</p>
+            </div>` : ''}
+          </div>
+
+          <div class="flex justify-between items-center text-[11px] text-slate-400 pt-1 border-t border-slate-700">
+            <span>Inv: ${item.statuses?.inventory ? '🟢' : '🔴'} | Grp: ${item.statuses?.groups ? '🟢' : '🔴'} | Out: ${item.statuses?.outfits ? '🟢' : '🔴'} | Bdg: ${item.statuses?.badges ? '🟢' : '🔴'}</span>
+            <button type="button" onclick="removeFromDataset('${item.userId}')" class="text-red-400 font-semibold hover:underline flex items-center gap-1">
+              <i class="fa-solid fa-trash-can"></i> Remove
+            </button>
+          </div>
+        `;
+
+        grid.appendChild(card);
+      });
+    }
+
+    function removeFromDataset(userId) {
+      if (confirm('Are you sure you want to remove this entry from the Database?')) {
+        db.ref(`roblox_security/dataset/${userId}`).remove()
+          .then(() => {
+            delete state.dataset[userId];
+            updateBadges();
+            renderDataset();
+            showToast("User removed from Realtime Database", "flag");
+          })
+          .catch((err) => {
+            alert("Firebase write error: " + err.message);
+          });
+      }
+    }
+
+    function exportDatasetJSON() {
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(state.dataset, null, 2));
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.setAttribute("href", dataStr);
+      downloadAnchor.setAttribute("download", `roblox_security_dataset_${Date.now()}.json`);
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+    }
+
+    function clearDataset() {
+      if (confirm('Are you sure you want to clear all records from the Dataset Registry?')) {
+        db.ref('roblox_security/dataset').remove()
+          .then(() => {
+            state.dataset = {};
+            updateBadges();
+            renderDataset();
+            showToast("Dataset Registry cleared", "flag");
+          })
+          .catch((err) => {
+            alert("Firebase write error: " + err.message);
+          });
+      }
+    }
+  </script>
+</body>
+</html>
+    .output-box {
+      height: 320px;
+      overflow-y: auto;
+    }
+    .tab-btn { color: #9ca3af; }
+    .tab-btn:hover { color: #60a5fa; }
+    .tab-btn.active {
+      border-bottom: 3px solid #3b82f6;
+      color: #60a5fa;
+      font-weight: 700;
+      background-color: #1e293b;
+    }
+    .toast-msg { animation: fadeInOut 2.5s forwards; }
+    @keyframes fadeInOut {
+      0% { opacity: 0; transform: translateY(-10px); }
+      15% { opacity: 1; transform: translateY(0); }
+      85% { opacity: 1; transform: translateY(0); }
+      100% { opacity: 0; transform: translateY(-10px); }
+    }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #1e293b; }
+    ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col bg-slate-900 text-slate-100">
+
+  <!-- Auth Gate Overlay -->
+  <div id="authGate" class="fixed inset-0 bg-slate-950 z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl p-8 max-w-md w-full text-center space-y-6 shadow-2xl">
+      <div class="w-16 h-16 bg-blue-600/20 text-blue-400 rounded-2xl mx-auto flex items-center justify-center text-2xl border border-blue-500/30">
+        <i class="fa-solid fa-shield-halved"></i>
+      </div>
+      <div>
+        <h2 class="text-xl font-bold text-slate-100">IAS Authorization Required</h2>
+        <p class="text-xs text-slate-400 mt-1">Authenticate using Discord or pre-approved email access to view audit databases.</p>
+      </div>
+
+      <div class="space-y-3 pt-2">
+        <button onclick="loginWithDiscord()" class="w-full bg-[#5865F2] hover:bg-[#4752C4] text-white font-semibold py-3 px-4 rounded-xl text-sm transition flex items-center justify-center gap-2 shadow-lg">
+          <i class="fa-brands fa-discord text-lg"></i> Authenticate with Discord
+        </button>
+
+        <div class="relative flex py-2 items-center">
+          <div class="flex-grow border-t border-slate-800"></div>
+          <span class="flex-shrink mx-4 text-slate-500 text-xs uppercase font-semibold">Or Email Access</span>
+          <div class="flex-grow border-t border-slate-800"></div>
+        </div>
+
+        <input type="email" id="authEmailInput" placeholder="Enter authorized email address..." class="w-full bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-500 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+        <button onclick="verifyEmailAccess()" class="w-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold py-2.5 px-4 rounded-xl text-sm transition">
+          Verify Email Access
+        </button>
+      </div>
+      <p id="authErrorMsg" class="text-xs text-red-400 hidden font-medium"></p>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="fixed top-5 right-5 z-50 flex flex-col gap-2 pointer-events-auto"></div>
+
+  <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-40 shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-wrap justify-between items-center h-16">
+      <div class="flex items-center gap-3">
+        <div>
+          <h1 class="text-lg font-bold text-slate-100 leading-tight">IAS Security Audit Tool</h1>
+          <p class="text-xs text-slate-400">Logged in as: <span id="currentUserDisplay" class="text-blue-400 font-semibold">Loading...</span></p>
+        </div>
+      </div>
+
+      <nav class="flex space-x-2 mt-2 sm:mt-0">
+        <button id="tab-main" onclick="switchTab('main')" class="tab-btn active px-4 py-3 text-sm font-semibold flex items-center space-x-2">
+          <i class="fa-solid fa-magnifying-glass"></i>
+          <span>Main Page</span>
+        </button>
+        <button id="tab-flagged" onclick="switchTab('flagged')" class="tab-btn px-4 py-3 text-sm font-semibold flex items-center space-x-2 relative">
+          <i class="fa-solid fa-flag text-red-400"></i>
+          <span>Flagged Users</span>
+          <span id="flagged-badge" class="ml-1 bg-red-600 text-white text-xs px-2 py-0.5 rounded-full font-bold">0</span>
+        </button>
+        <button id="tab-dataset" onclick="switchTab('dataset')" class="tab-btn px-4 py-3 text-sm font-semibold flex items-center space-x-2">
+          <i class="fa-solid fa-database text-indigo-400"></i>
+          <span>Dataset Registry</span>
+          <span id="dataset-badge" class="ml-1 bg-indigo-600 text-white text-xs px-2 py-0.5 rounded-full font-bold">0</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
+    <!-- MAIN PAGE TAB -->
+    <section id="page-main" class="tab-content block space-y-6">
+      <div class="bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-700">
+        <h2 class="text-md font-bold text-slate-100 mb-2">User Intelligence Search</h2>
+        <p class="text-xs text-slate-400 mb-4">Check multiple users simultaneously by separating usernames with commas.</p>
+        <div class="flex flex-col sm:flex-row gap-3">
+          <input type="text" id="usernameInput" placeholder="Enter usernames e.g. Builderman, Roblox, Stickmasterluke" class="flex-1 bg-slate-900 border border-slate-700 text-slate-100 placeholder-slate-500 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <button id="searchBtn" onclick="loadAllUsers()" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-2.5 rounded-lg text-sm transition-all flex items-center justify-center space-x-2">
+            <i class="fa-solid fa-users-viewfinder"></i>
+            <span>Check User(s)</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="multiUserContainer" class="space-y-6"></div>
+    </section>
+
+    <!-- FLAGGED USERS TAB -->
+    <section id="page-flagged" class="tab-content hidden space-y-6">
+      <div class="bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-700 flex flex-col md:flex-row justify-between items-md-center gap-4">
+        <div>
+          <h2 class="text-lg font-bold text-slate-100 flex items-center gap-2">
+            <i class="fa-solid fa-triangle-exclamation text-red-400"></i>
+            <span>Flagged Security Targets</span>
+          </h2>
+          <p class="text-xs text-slate-400">Users automatically flagged due to security rules or investigator submissions.</p>
+        </div>
+        <div class="w-full md:w-80">
+          <input type="text" id="flaggedSearch" oninput="renderFlaggedUsers()" placeholder="Filter flagged users..." class="w-full bg-slate-900 border border-slate-700 text-slate-100 placeholder-slate-500 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-400">
+        </div>
+      </div>
+
+      <div id="flaggedGrid" class="grid grid-cols-1 lg:grid-cols-2 gap-6"></div>
+    </section>
+
+    <!-- DATASET REGISTRY TAB -->
+    <section id="page-dataset" class="tab-content hidden space-y-6">
+      <div class="bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-700 flex flex-col md:flex-row justify-between items-md-center gap-4">
+        <div>
+          <h2 class="text-lg font-bold text-slate-100 flex items-center gap-2">
+            <i class="fa-solid fa-server text-indigo-400"></i>
+            <span>Security Dataset Registry</span>
+          </h2>
+          <p class="text-xs text-slate-400">Archived cases logged into the global database across all investigators.</p>
+        </div>
+        <div class="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+          <input type="text" id="datasetSearch" oninput="renderDataset()" placeholder="Search dataset..." class="bg-slate-900 border border-slate-700 text-slate-100 placeholder-slate-500 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+          <button onclick="exportDatasetJSON()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-medium px-4 py-2 rounded-lg text-sm flex items-center justify-center gap-1.5">
+            <i class="fa-solid fa-download"></i> Export
+          </button>
+          <button onclick="clearDataset()" class="bg-red-950/50 hover:bg-red-900/50 text-red-400 font-medium px-4 py-2 rounded-lg text-sm border border-red-800/50 flex items-center justify-center gap-1.5">
+            <i class="fa-solid fa-trash-can"></i> Clear All
+          </button>
+        </div>
+      </div>
+
+      <div id="datasetGrid" class="grid grid-cols-1 lg:grid-cols-2 gap-6"></div>
+    </section>
+  </main>
+
+  <!-- Outfit Enlarge Modal -->
+  <div id="outfitModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 max-w-sm w-full flex flex-col items-center gap-4 text-center">
+      <h3 id="outfitModalTitle" class="text-md font-bold text-slate-100">Outfit Preview</h3>
+      <img id="outfitModalImg" src="" alt="Outfit Enlarged" class="w-64 h-64 object-cover rounded-lg bg-slate-900 border border-slate-700" />
+      <button onclick="closeOutfitModal()" class="w-full bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-semibold py-2 rounded-lg">Close Preview</button>
+    </div>
+  </div>
+
+  <!-- Dataset Log Modal -->
+  <div id="datasetModal" class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-800 rounded-xl shadow-xl border border-slate-700 max-w-lg w-full p-6 space-y-4">
+      <div class="flex justify-between items-center border-b border-slate-700 pb-3">
+        <h3 class="text-lg font-bold text-slate-100 flex items-center gap-2">
+          <i class="fa-solid fa-folder-plus text-indigo-400"></i> Log User to Dataset
+        </h3>
+        <button onclick="closeDatasetModal()" class="text-slate-400 hover:text-slate-200 text-lg"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <input type="hidden" id="modalUserId">
+      <input type="hidden" id="modalUsername">
+
+      <div>
+        <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Reason for Entry</label>
+        <textarea id="modalReason" rows="3" placeholder="Explain security concern, suspicious activity, or audit notes..." class="w-full bg-slate-900 border border-slate-700 text-slate-100 placeholder-slate-500 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"></textarea>
+      </div>
+
+      <div>
+        <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Proof / Evidence Details</label>
+        <textarea id="modalProof" rows="3" placeholder="Paste proof URLs, screenshot links, Discord case IDs, or reference notes..." class="w-full bg-slate-900 border border-slate-700 text-slate-100 placeholder-slate-500 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"></textarea>
+      </div>
+
+      <div class="flex justify-end gap-3 pt-2">
+        <button onclick="closeDatasetModal()" class="px-4 py-2 rounded-lg border border-slate-700 text-slate-300 text-sm font-medium hover:bg-slate-700">Cancel</button>
+        <button onclick="confirmSaveDataset()" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold">Save to Dataset</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyCpjLDCIrxVl1hklRGSZCZMC2rkoLvLNxw",
+      authDomain: "ias-bc.firebaseapp.com",
+      databaseURL: "https://ias-bc-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "ias-bc",
+      storageBucket: "ias-bc.firebasestorage.app",
+      messagingSenderId: "601488730553",
+      appId: "1:601488730553:web:01be52f2441146a36fee68"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    const BLACKLISTED_GROUP_IDS = [123456, 9876543, 33504850]; 
     const AUTHORIZED_EMAILS = ["admin@ias-security.local", "auditor@ias-security.local", "riamaestro67@gmail.com"]; 
     
     // REPLACE THIS WITH YOUR ACTUAL DISCORD SERVER (GUILD) ID
